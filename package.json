@@ -1,0 +1,16 @@
+{
+  "name": "webgl-line",
+  "version": "2.0.0",
+  "description": "Shared daily task board for the WebGL conversion line. Static HTML/CSS/JS, Supabase for the shared board.",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node tools/tests.js",
+    "seed": "node tools/seed.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}
