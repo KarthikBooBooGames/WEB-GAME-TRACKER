@@ -3,6 +3,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 
 /* Local development: a .env file next to this script is read if present (Railway uses real environment variables). */
 try {
@@ -20,9 +21,54 @@ function configJs() {
   const cfg = {
     supabaseUrl: (process.env.SUPABASE_URL || '').replace(/\/+$/, ''),
     anonKey: process.env.SUPABASE_ANON_KEY || '',
-    boardId: process.env.BOARD_ID || 'main'
+    boardId: process.env.BOARD_ID || 'main',
+    sheet: !!(process.env.SHEET_WEBAPP_URL && process.env.SHEET_TOKEN)
   };
   return 'window.LINE_CONFIG=' + JSON.stringify(cfg) + ';';
+}
+
+function json(res, code, obj) {
+  res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.end(JSON.stringify(obj));
+}
+
+/* Apps Script answers /exec with a 302 to script.googleusercontent.com and expects the POST replayed there,
+   so follow redirects by re-POSTing rather than falling back to GET. */
+function postJson(url, data, hops, cb) {
+  let u; try { u = new URL(url); } catch (e) { return cb(e); }
+  const rq = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } }, resp => {
+    if (resp.statusCode > 299 && resp.statusCode < 400 && resp.headers.location && hops > 0) {
+      resp.resume();
+      return postJson(new URL(resp.headers.location, url).toString(), data, hops - 1, cb);
+    }
+    let body = '';
+    resp.on('data', c => { body += c; });
+    resp.on('end', () => cb(null, resp.statusCode, body));
+  });
+  rq.on('error', cb);
+  rq.setTimeout(20000, () => rq.destroy(new Error('timeout')));
+  rq.end(data);
+}
+
+/* The browser never sees the script URL or the token: it posts here and this adds them. */
+function sheetProxy(req, res) {
+  const url = process.env.SHEET_WEBAPP_URL, token = process.env.SHEET_TOKEN;
+  if (!url || !token) return json(res, 200, { ok: false, error: 'not_configured' });
+  let body = '', over = false;
+  req.on('data', c => { body += c; if (body.length > 8e6) { over = true; req.destroy(); } });
+  req.on('end', () => {
+    if (over) return json(res, 413, { ok: false, error: 'too_big' });
+    let payload;
+    try { payload = JSON.parse(body); } catch (e) { return json(res, 400, { ok: false, error: 'bad_json' }); }
+    payload.token = token;
+    postJson(url, JSON.stringify(payload), 3, (err, code, out) => {
+      if (err) return json(res, 200, { ok: false, error: 'upstream', detail: String(err.message || err) });
+      let parsed = null; try { parsed = JSON.parse(out); } catch (e) {}
+      if (!parsed) return json(res, 200, { ok: false, error: 'upstream', detail: 'HTTP ' + code + ' from Apps Script (check the deployment allows Anyone)' });
+      return json(res, 200, parsed);
+    });
+  });
 }
 
 http.createServer((req, res) => {
@@ -30,6 +76,10 @@ http.createServer((req, res) => {
   if (u === '/config.js') {
     res.writeHead(200, { 'content-type': MIME['.js'], 'cache-control': 'no-store' });
     return res.end(configJs());
+  }
+  if (u === '/sheet') {
+    if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'post_only' });
+    return sheetProxy(req, res);
   }
   if (u === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
   if (u === '/' || u === '') u = '/index.html';
@@ -42,4 +92,4 @@ http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': MIME[ext] || 'application/octet-stream', 'cache-control': 'no-cache' });
     res.end(body);
   });
-}).listen(PORT, () => console.log('WebGL Line on port ' + PORT + (process.env.SUPABASE_URL ? ' (Supabase)' : ' (local mode, no Supabase configured)')));
+}).listen(PORT, () => console.log('WebGL Line on port ' + PORT + (process.env.SUPABASE_URL ? ' (Supabase)' : ' (local mode, no Supabase configured)') + (process.env.SHEET_WEBAPP_URL && process.env.SHEET_TOKEN ? ' + Google Sheet archive' : '')));

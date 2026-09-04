@@ -101,5 +101,38 @@ console.log('views + csv');
   const csv = Line.backupCSV(s, P); ok(csv.indexOf('box (h)') > 0 && csv.split('\r\n').length > 30, 'csv has box columns and rows');
   s.games[1].note = 'has, comma "and quotes"'; ok(Line.backupCSV(s, Line.fit(s, T).plan).indexOf('"has, comma ""and quotes"""') > 0, 'csv escaping'); }
 
+console.log('google sheet archive');
+{ const s = clone();
+  s.log = [{ t: '2026-09-07 09:10', who: 'hemil', msg: 'Hemil ✓ Clean · Merge Chain', k: 'done' },
+            { t: '2026-09-07 09:02', who: 'rakesh', msg: 'Rakesh ▶ started WebGL · Ring Breaker', k: '' }];
+  Line.backfillLogIds(s);
+  ok(s.log.every(e => e.id), 'every legacy entry gets an id');
+  ok(s.log[0].id !== s.log[1].id, 'different entries get different ids');
+  const first = s.log.map(e => e.id);
+  const again = JSON.parse(JSON.stringify(s)); again.log.forEach(e => delete e.id); Line.backfillLogIds(again);
+  eq(again.log.map(e => e.id), first, 'legacy ids are stable, so a replay never doubles a row');
+  const withNew = clone(); withNew.log = [{ id: 'abc', t: 't', who: 'hemil', msg: 'm' }]; Line.backfillLogIds(withNew);
+  eq(withNew.log[0].id, 'abc', 'an existing id is left alone');
+
+  const F = Line.fit(s, T), P = F.plan;
+  const pay = Line.sheetPayload(s, P, { key: 'v7', at: '2026-09-07 09:11', by: 'Hemil' });
+  eq(pay.activity.length, 2, 'both events in the payload');
+  eq(pay.activity[0].t, '2026-09-07 09:02', 'activity is oldest-first for a sheet that reads top down');
+  eq(pay.activity[0].who, 'Rakesh', 'who is resolved to a display name');
+  ok(pay.activity.every(e => e.id), 'every activity row carries an id for dedupe');
+  eq(pay.snapshot.key, 'v7', 'snapshot keyed by board version');
+  eq(pay.snapshot.games, 27, 'snapshot counts non-kit games');
+  eq(pay.snapshot.shipped, 0, 'snapshot counts shipped');
+  eq(JSON.parse(pay.snapshot.json).games.length, s.games.length, 'snapshot json restores the whole board');
+  ok(JSON.parse(pay.snapshot.json).log.length === 2, 'snapshot keeps the log, so it is a complete restore point');
+  eq(pay.board, Line.backupRows(s, P), 'board tab mirrors the readable backup rows');
+  ok(pay.board[0].indexOf('Game') >= 0 && pay.board.length === s.games.length + 1, 'board tab is a header plus every game'); }
+
+{ const s = clone(); const g = s.games.find(x => x.id === 'merge-chain');
+  Line.STAGES.forEach(st => { g.st[st.k] = { s: 'done', at: '2026-09-09' }; });
+  const P = Line.fit(s, T).plan, pay = Line.sheetPayload(s, P, { key: 'v9' });
+  eq(pay.snapshot.shipped, 1, 'a shipped game shows in the snapshot count');
+  eq(pay.activity.length, 0, 'an empty log makes an empty activity list, not a crash'); }
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

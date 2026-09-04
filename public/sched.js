@@ -350,6 +350,25 @@ var Line = (function () {
     return 'WebGL Line backup ' + P.from + '\r\n\r\nGAMES\r\n' + toCSV(backupRows(state, P)) + '\r\n\r\nACTIVITY\r\n' + toCSV(logRows(state));
   }
 
+  /* ---- Google Sheet archive ---- */
+  /* Legacy log entries predate ids. A stable hash of the entry lets the sheet dedupe them
+     the same way it dedupes new ones, so replaying a backlog never doubles a row. */
+  function hash(s) { var h = 5381; for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; return h.toString(36); }
+  function logId(e) { return 'lg' + hash(String(e.t) + '|' + String(e.who) + '|' + String(e.msg)); }
+  function backfillLogIds(state) { (state.log || []).forEach(function (e) { if (!e.id) e.id = logId(e); }); return state; }
+  /* activity is oldest-first so the sheet reads top to bottom; state.log is newest-first. */
+  function sheetPayload(state, P, o) {
+    o = o || {};
+    var nk = state.games.filter(function (g) { return g.tier !== 'K'; });
+    return {
+      activity: (state.log || []).slice().reverse().map(function (e) {
+        return { id: e.id || logId(e), t: e.t, who: (state.people[e.who] || {}).name || e.who, msg: e.msg, k: e.k || '' };
+      }),
+      snapshot: { key: o.key || '', at: o.at || '', by: o.by || '', games: nk.length,
+                  shipped: nk.filter(function (g) { return isShipped(state, g); }).length, json: JSON.stringify(state) },
+      board: backupRows(state, P)
+    };
+  }
   return {
     H: H, STAGES: STAGES, STAGE: STAGE, DEPS: DEPS, TIERS: TIERS, TIER_KEYS: TIER_KEYS, KIT: KIT, DOWS: DOWS, MONS: MONS,
     toISO: toISO, parse: parse, addDays: addDays, dow: dow, isWeekend: isWeekend, monday: monday, validDate: validDate,
@@ -358,6 +377,7 @@ var Line = (function () {
     status: status, stageDone: stageDone, isShipped: isShipped, shippedAt: shippedAt, started: started,
     applyAuto: applyAuto, applyPriority: applyPriority, applyMix: applyMix, plan: plan, fit: fit,
     tasksOn: tasksOn, hoursOn: hoursOn, shipsOn: shipsOn, nextShip: nextShip, monthProjection: monthProjection, headcountAtFullEstimates: headcountAtFullEstimates,
+    logId: logId, backfillLogIds: backfillLogIds, sheetPayload: sheetPayload,
     backupRows: backupRows, logRows: logRows, toCSV: toCSV, toTSV: toTSV, backupCSV: backupCSV
   };
 })();

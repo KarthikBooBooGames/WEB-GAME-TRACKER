@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node tools/tests.js",
-    "seed": "node tools/seed.js"
+    "seed": "node tools/seed.js",
+    "check:sheet": "node tools/check-sheet.js"
   },
   "engines": {
     "node": ">=18"

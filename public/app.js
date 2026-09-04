@@ -8,6 +8,7 @@ var S = Line.STAGES, ST = Line.STAGE, HRS = Line.H;
 var CFG = window.LINE_CONFIG || {};
 var ONLINE = !!(CFG.supabaseUrl && CFG.anonKey);
 var BOARD = CFG.boardId || 'main';
+var SHEET = !!CFG.sheet;
 var TODAY = Line.toISO(new Date());
 var state = null, version = 0, F = null, P = null;
 var me = null; try { me = localStorage.getItem('line.me'); } catch (e) {}
@@ -17,6 +18,7 @@ var ui = { tab: 'today', week: null, filter: 'all', open: null, stuckFor: null, 
 try { var savedTab = sessionStorage.getItem('line.tab'); if (savedTab) ui.tab = savedTab; } catch (e) {}
 var DONE_MSGS = ['Nice. ✓', 'One more off the line. ✓', 'Clean work. ✓', 'That is progress. ✓', 'Keep it rolling. ✓'];
 
+function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 function migrate(s) {
   if (!s.settings) s.settings = {};
   if (s.settings.target == null && s.settings.monthTarget != null) s.settings.target = s.settings.monthTarget;
@@ -25,6 +27,7 @@ function migrate(s) {
   if (!s.people) s.people = JSON.parse(JSON.stringify(window.SEED.people));
   if (!s.games) s.games = [];
   if (!s.log) s.log = [];
+  Line.backfillLogIds(s);
   return s;
 }
 function replan() { F = Line.fit(state, TODAY); P = F.plan; }
@@ -91,11 +94,11 @@ function scheduleSave() {
 }
 function saveNow() {
   if (!dirty || saving || !state) return;
-  if (!ONLINE) { try { localStorage.setItem('line.state', JSON.stringify(state)); } catch (e) {} dirty = false; setSave('Saved on this device'); return; }
+  if (!ONLINE) { try { localStorage.setItem('line.state', JSON.stringify(state)); } catch (e) {} dirty = false; setSave('Saved on this device'); scheduleSheet(); return; }
   saving = true; setSave('Saving…');
   rpc('board_save', { p_id: BOARD, p_pass: pass, p_state: state, p_expected_version: version }).then(function (j) {
     saving = false;
-    if (j && j.ok) { version = j.version; dirty = false; setSave('Saved ✓'); return; }
+    if (j && j.ok) { version = j.version; dirty = false; setSave('Saved ✓'); scheduleSheet(); return; }
     if (j && j.error === 'conflict') {
       state = migrate(j.state); version = j.version; dirty = false; replan(); render(); setSave('Saved');
       toast('Someone saved just before you. The board refreshed — please redo your last tap.', 'warn', 5000); return;
@@ -114,10 +117,40 @@ function startPolling() { clearInterval(pollTimer); pollTimer = setInterval(poll
 document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') poll(); });
 window.addEventListener('beforeunload', function () { if (dirty && !saving && ONLINE) { try { navigator.sendBeacon && navigator.sendBeacon(CFG.supabaseUrl + '/rest/v1/rpc/board_save?apikey=' + encodeURIComponent(CFG.anonKey), new Blob([JSON.stringify({ p_id: BOARD, p_pass: pass, p_state: state, p_expected_version: version })], { type: 'application/json' })); } catch (e) {} } });
 
+/* ---------- Google Sheet archive ---------- */
+/* Every sync resends the whole activity log and the sheet skips ids it already holds. That costs a few
+   kilobytes and buys self-healing: a backlog left behind by one browser going offline gets pushed by
+   whoever saves next, because the log is shared state. */
+var sheetTimer = null, sheetBusy = false, sheetAgain = false, sheetFails = 0, localKey = 0;
+function setSheet(txt, cls) { var el = $('#sheetState'); if (!el) return; el.textContent = txt || ''; el.className = 'sheet' + (cls ? ' ' + cls : ''); el.hidden = !txt; }
+function scheduleSheet() { if (!SHEET) return; clearTimeout(sheetTimer); sheetTimer = setTimeout(syncSheet, 4000); }
+function retrySheet() { clearTimeout(sheetTimer); sheetTimer = setTimeout(syncSheet, Math.min(60000, 5000 * Math.pow(2, Math.min(4, sheetFails)))); }
+function syncSheet() {
+  if (!SHEET || !state || !P) return;
+  if (sheetBusy) { sheetAgain = true; return; }
+  sheetBusy = true; setSheet('Sheet: saving…');
+  var payload = Line.sheetPayload(state, P, {
+    /* Online the version is the key, so a retry lands on the same row. Local mode has no version, so hold
+       one timestamp until the sync actually succeeds rather than minting a new key per attempt. */
+    key: ONLINE ? 'v' + version : 'L' + (localKey || (localKey = Date.now())),
+    at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    by: me ? pname(me) : ''
+  });
+  fetch('/sheet', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      sheetBusy = false;
+      if (j && j.ok) { sheetFails = 0; localKey = 0; setSheet('Sheet ✓'); }
+      else { sheetFails++; setSheet('Sheet: ' + ((j && j.error) || 'failed'), 'err'); retrySheet(); }
+      if (sheetAgain) { sheetAgain = false; scheduleSheet(); }
+    })
+    .catch(function () { sheetBusy = false; sheetFails++; setSheet('Sheet: offline · will retry', 'err'); retrySheet(); });
+}
+
 /* ---------- mutations ---------- */
 function log(msg, kind) {
   state.log = state.log || [];
-  state.log.unshift({ t: new Date().toISOString().slice(0, 16).replace('T', ' '), who: me || 'producer', msg: msg, k: kind || '' });
+  state.log.unshift({ id: newId(), t: new Date().toISOString().slice(0, 16).replace('T', ' '), who: me || 'producer', msg: msg, k: kind || '' });
   if (state.log.length > 400) state.log.length = 400;
 }
 function commit(msg, fn, kind) {
@@ -420,7 +453,7 @@ function renderSettings() {
     }
   } else h += '<p class="plan-line">Set an end date and every stage gets a time box that fits it.</p>';
   h += '</section>';
-  h += '<section><h2>Backup</h2><p class="hint">CSV opens straight in Google Sheets (File → Import). Do it Friday, takes 5 seconds.</p><div class="row"><button class="btn primary" data-act="backup">Download CSV backup</button><button class="btn" data-act="copytsv">Copy for Sheets</button><button class="btn" data-act="exportjson">Download full JSON</button></div></section>';
+  h += '<section><h2>Backup</h2><p class="hint">CSV opens straight in Google Sheets (File → Import). Do it Friday, takes 5 seconds.</p><div class="row"><button class="btn primary" data-act="backup">Download CSV backup</button><button class="btn" data-act="copytsv">Copy for Sheets</button><button class="btn" data-act="exportjson">Download full JSON</button>' + (SHEET ? '<button class="btn" data-act="sheetnow">Save to Google Sheet now</button>' : '') + '</div>' + (SHEET ? '<p class="hint">The sheet already holds every event and every saved version — that happens automatically. This just pushes now instead of waiting.</p>' : '') + '</section>';
   h += '<details class="adv" data-key="adv"' + (ui.openKeys.adv ? ' open' : '') + '><summary>Advanced · the board manages these for you, open only if you must</summary><div class="set">';
   h += '<section><h2>Queue order</h2>';
   h += '<label class="radio"><input type="radio" name="order" value="auto" data-order' + ((s.order || 'auto') === 'auto' ? ' checked' : '') + '> Automatic: lightest games first, most games by the end date (recommended)</label>';
@@ -497,6 +530,7 @@ document.addEventListener('click', function (ev) {
   if (act === 'move' && g) { var i = state.games.indexOf(g), j = i + (+a.dataset.n); if (j < 0 || j >= state.games.length) return; commit(pname(me) + ' moved ' + g.name + ' ' + (j < i ? 'earlier' : 'later'), function () { state.games.splice(i, 1); state.games.splice(j, 0, g); }); return; }
   if (act === 'del' && g) { ui.open = null; commit(pname(me) + ' removed ' + g.name, function () { state.games.splice(state.games.indexOf(g), 1); }); return; }
   if (act === 'delperson') { var dp = a.dataset.p; if (!state.people[dp] || dp === 'producer') return; commit(pname(me) + ' removed ' + pname(dp), function () { delete state.people[dp]; if (me === dp) me = null; }); return; }
+  if (act === 'sheetnow') { syncSheet(); toast('Pushing to the Google Sheet…', '', 1600); return; }
   if (act === 'backup') return backup('csv');
   if (act === 'exportjson') return backup('json');
   if (act === 'copytsv') { var tsv = Line.toTSV(Line.backupRows(state, P)) + '\n\n' + Line.toTSV(Line.logRows(state)); copy(tsv, 'Copied. Paste into a Google Sheet (Ctrl+V).'); return; }
@@ -575,7 +609,7 @@ function boot() {
   render();
   if (!me) return;
   if (ONLINE && !pass) { render(); return; }
-  loadBoard().then(function (ok) { if (ok && state) { replan(); render(); startPolling(); } else render(); });
+  loadBoard().then(function (ok) { if (ok && state) { replan(); render(); startPolling(); scheduleSheet(); } else render(); });
 }
 window.LineDebug = function () { return { state: state, ui: ui, plan: P, fit: F, me: me, today: TODAY, version: version, online: ONLINE, poll: poll }; };
 boot();
