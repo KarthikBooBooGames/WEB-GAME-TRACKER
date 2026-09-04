@@ -32,15 +32,23 @@ function json(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
-/* Apps Script answers /exec with a 302 to script.googleusercontent.com and expects the POST replayed there,
-   so follow redirects by re-POSTing rather than falling back to GET. */
+/* Two things Apps Script insists on, both learned the hard way:
+   - the body must go as text/plain. It reads e.postData.contents itself, and with
+     application/json the page it redirects to answers 404.
+   - the 302 must be followed with GET. doPost has already run by then; the redirect only
+     carries the answer, and re-POSTing to it is refused with 405. */
+const UA = 'webgl-line/1.0';
 function postJson(url, data, hops, cb) {
   let u; try { u = new URL(url); } catch (e) { return cb(e); }
-  const rq = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: 'POST',
-    headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } }, resp => {
+  const post = data != null;
+  const headers = post
+    ? { 'content-type': 'text/plain;charset=utf-8', 'content-length': Buffer.byteLength(data), 'user-agent': UA }
+    : { 'user-agent': UA };
+  const rq = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search,
+    method: post ? 'POST' : 'GET', headers }, resp => {
     if (resp.statusCode > 299 && resp.statusCode < 400 && resp.headers.location && hops > 0) {
       resp.resume();
-      return postJson(new URL(resp.headers.location, url).toString(), data, hops - 1, cb);
+      return postJson(new URL(resp.headers.location, url).toString(), null, hops - 1, cb);
     }
     let body = '';
     resp.on('data', c => { body += c; });
@@ -48,7 +56,7 @@ function postJson(url, data, hops, cb) {
   });
   rq.on('error', cb);
   rq.setTimeout(20000, () => rq.destroy(new Error('timeout')));
-  rq.end(data);
+  rq.end(post ? data : undefined);
 }
 
 /* The browser never sees the script URL or the token: it posts here and this adds them. */

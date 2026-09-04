@@ -14,9 +14,19 @@ The producer sets three things under **Plan**: start date, end date, target (gam
 ### 2. Google Sheet (the permanent archive, optional but recommended)
 1. Create a Google Sheet. Name it whatever you like; leave it empty.
 2. **Extensions → Apps Script**. Delete the placeholder code, paste `google/Code.gs`.
-3. At the top, change `CHANGE-ME-SHEET-TOKEN` to a long random string. Save.
-4. **Deploy → New deployment → Web app**. Execute as **Me**, who has access **Anyone**. Deploy, approve the permission prompt, copy the `/exec` URL.
+3. At the top, change `CHANGE-ME-SHEET-TOKEN` to a long random string **that you make up**. It is a shared password between your server and the script — Google does not give it to you, and it is not the deployment id. Save.
+4. **Deploy → New deployment → Web app**. Execute as **Me**, "Who has access" **Anyone**. Deploy, approve the permission prompt, copy the `/exec` URL.
 5. Keep that URL and the token for the next step.
+
+Two settings people get wrong here, both of which produce an `Access denied` page:
+- **Who has access must be "Anyone"**, not "Anyone with Google account" and not "Only myself". Your server calls this without being signed in as you.
+- **Editing `Code.gs` does not update the live web app.** After any change: Deploy → Manage deployments → edit (pencil) → Version: **New version** → Deploy.
+
+Check it before going further:
+
+```bash
+npm run check:sheet
+```
 
 The "Anyone" setting is what lets your server reach it; the token is what stops anyone else. Treat the token like the passcode.
 
@@ -48,10 +58,20 @@ Leave the variables empty and the board runs in **local mode**: it saves in that
 - `google/Code.gs` — the Google Sheet archive (paste into Apps Script, deploy as a web app)
 - `tools/tests.js` — scheduler tests (`npm test`)
 - `tools/check-sheet.js` — verifies the archive is wired up (`npm run check:sheet`)
+- `tools/push-sheet.js` — one-shot full backup into the sheet (`npm run push:sheet`)
 
 ## The Google Sheet archive
 
-With `SHEET_WEBAPP_URL` and `SHEET_TOKEN` set, the board pushes itself into your sheet a few seconds after every save. Three tabs appear on their own:
+With `SHEET_WEBAPP_URL` and `SHEET_TOKEN` set, the board writes itself into your sheet:
+
+- **After every change** — any tap, edit or status change, about four seconds after it saves.
+- **Once an hour**, as a backstop for a board left open with nothing happening.
+- **When the tab closes**, via a beacon, so a pending change is not lost.
+- **On demand** — Plan → Backup → **Save to Google Sheet now**.
+
+An idle hourly beat costs nothing: the snapshot is keyed by board version and the activity by event id, so a sync with no changes adds no rows.
+
+Three tabs appear on their own:
 
 | Tab | What it holds | Rewritten? |
 | --- | --- | --- |
@@ -62,6 +82,18 @@ With `SHEET_WEBAPP_URL` and `SHEET_TOKEN` set, the board pushes itself into your
 Nothing is ever deleted from Activity or Snapshots. The board's own activity log keeps only the last 400 events to stay small, but the sheet keeps all of them forever, so it outlives the board.
 
 **It heals itself.** Every sync resends the whole log and the sheet ignores ids it already has. If someone's browser is offline when they tap Done, the rows are pushed by whoever saves next — the log is shared state, so any teammate's browser can flush the backlog. Failed syncs retry with a backoff, and the header shows `Sheet ✓` or what went wrong.
+
+**To back up everything at once**, from your machine rather than the browser:
+
+```bash
+npm run push:sheet
+```
+
+That pulls the live board from Supabase (add `BOARD_PASSCODE` to `.env`, or pass `--pass <passcode>`) and writes all three tabs including the Board. Without Supabase configured it uses the starting board. To push an export instead:
+
+```bash
+npm run push:sheet -- --file webgl-line-full-2026-09-04.json
+```
 
 **To restore from a snapshot:** open the Snapshots row you want, copy the *State JSON* cell (and the cells to its right if the JSON spilled over — Sheets caps a cell at 50,000 characters), paste the joined text into **Plan → Advanced → Restore from JSON**.
 

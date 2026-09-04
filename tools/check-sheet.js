@@ -41,14 +41,22 @@ if (!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(URL_)) {
     'A /dev URL only works while you are signed in, so it will not work from the server.');
 }
 
+/* Two things Apps Script insists on, both learned the hard way:
+   - the body must go as text/plain. It reads e.postData.contents itself, and with
+     application/json the page it redirects to answers 404.
+   - the 302 must be followed with GET. doPost has already run by then; the redirect only
+     carries the answer, and re-POSTing to it is refused with 405. */
+const UA = 'webgl-line/1.0';
 function call(method, url, data, hops, cb) {
   let u;
   try { u = new URL(url); } catch (e) { return cb(e); }
-  const headers = data ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(data) } : {};
+  const headers = data
+    ? { 'content-type': 'text/plain;charset=utf-8', 'content-length': Buffer.byteLength(data), 'user-agent': UA }
+    : { 'user-agent': UA };
   const rq = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method, headers }, resp => {
     if (resp.statusCode > 299 && resp.statusCode < 400 && resp.headers.location && hops > 0) {
       resp.resume();
-      return call(method, new URL(resp.headers.location, url).toString(), data, hops - 1, cb);
+      return call('GET', new URL(resp.headers.location, url).toString(), null, hops - 1, cb);
     }
     let body = '';
     resp.on('data', c => { body += c; });

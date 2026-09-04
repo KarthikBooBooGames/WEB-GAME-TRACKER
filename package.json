@@ -8,7 +8,8 @@
     "start": "node server.js",
     "test": "node tools/tests.js",
     "seed": "node tools/seed.js",
-    "check:sheet": "node tools/check-sheet.js"
+    "check:sheet": "node tools/check-sheet.js",
+    "push:sheet": "node tools/push-sheet.js"
   },
   "engines": {
     "node": ">=18"

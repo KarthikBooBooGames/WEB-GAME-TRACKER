@@ -121,7 +121,8 @@ window.addEventListener('beforeunload', function () { if (dirty && !saving && ON
 /* Every sync resends the whole activity log and the sheet skips ids it already holds. That costs a few
    kilobytes and buys self-healing: a backlog left behind by one browser going offline gets pushed by
    whoever saves next, because the log is shared state. */
-var sheetTimer = null, sheetBusy = false, sheetAgain = false, sheetFails = 0, localKey = 0;
+var sheetTimer = null, sheetBusy = false, sheetAgain = false, sheetFails = 0, localKey = 0, sheetHeart = null;
+var SHEET_EVERY = 3600000; /* hourly heartbeat, on top of the sync that every change already triggers */
 function setSheet(txt, cls) { var el = $('#sheetState'); if (!el) return; el.textContent = txt || ''; el.className = 'sheet' + (cls ? ' ' + cls : ''); el.hidden = !txt; }
 function scheduleSheet() { if (!SHEET) return; clearTimeout(sheetTimer); sheetTimer = setTimeout(syncSheet, 4000); }
 function retrySheet() { clearTimeout(sheetTimer); sheetTimer = setTimeout(syncSheet, Math.min(60000, 5000 * Math.pow(2, Math.min(4, sheetFails)))); }
@@ -146,6 +147,27 @@ function syncSheet() {
     })
     .catch(function () { sheetBusy = false; sheetFails++; setSheet('Sheet: offline · will retry', 'err'); retrySheet(); });
 }
+/* Changes drive the sync; this is the backstop for a board left open with nothing happening.
+   An idle beat costs nothing: the sheet dedupes the snapshot by version and the activity by id. */
+function startSheetHeartbeat() {
+  if (!SHEET) return;
+  clearInterval(sheetHeart);
+  sheetHeart = setInterval(function () { syncSheet(); }, SHEET_EVERY);
+}
+/* Closing the tab cancels any pending debounce, so hand the payload to the browser to deliver. */
+function flushSheet() {
+  if (!SHEET || !state || !P || sheetBusy) return;
+  try {
+    if (!navigator.sendBeacon) return;
+    var payload = Line.sheetPayload(state, P, {
+      key: ONLINE ? 'v' + version : 'L' + (localKey || (localKey = Date.now())),
+      at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+      by: me ? pname(me) : ''
+    });
+    navigator.sendBeacon('/sheet', new Blob([JSON.stringify(payload)], { type: 'application/json' }));
+  } catch (e) {}
+}
+window.addEventListener('pagehide', flushSheet);
 
 /* ---------- mutations ---------- */
 function log(msg, kind) {
@@ -609,7 +631,7 @@ function boot() {
   render();
   if (!me) return;
   if (ONLINE && !pass) { render(); return; }
-  loadBoard().then(function (ok) { if (ok && state) { replan(); render(); startPolling(); scheduleSheet(); } else render(); });
+  loadBoard().then(function (ok) { if (ok && state) { replan(); render(); startPolling(); scheduleSheet(); startSheetHeartbeat(); } else render(); });
 }
 window.LineDebug = function () { return { state: state, ui: ui, plan: P, fit: F, me: me, today: TODAY, version: version, online: ONLINE, poll: poll }; };
 boot();
